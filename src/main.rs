@@ -4,7 +4,6 @@ use std::sync::Mutex;
 
 struct AppStateWithMutex {
     counter: Mutex<i32>,
-    app_name: String,
     notes: Mutex<Vec<Note>>
 }
 
@@ -41,12 +40,26 @@ async fn create_note(data: web::Data<AppStateWithMutex>, create_note_request: Js
     Ok(create_note_request)
 }
 
+async fn update_note(uid: Path<u32>, data: web::Data<AppStateWithMutex>, update_note_request: Json<Note>) -> Result<Json<Note>, error::Error> {
+    let mut notes = data.notes.lock().unwrap();
+    let uuid = uid.into_inner() as usize;
+    match notes.get(uuid) {
+        Some(_) => {
+            notes[uuid] = update_note_request.clone();
+            Ok(Json(update_note_request.clone()))
+        },
+        None => {
+            Err(error::ErrorNotFound("Note note found"))
+        }
+    }
+}
+
 async fn delete_note(uid: Path<u32>, data: web::Data<AppStateWithMutex>) -> Result<HttpResponse, error::Error> {
     let mut notes = data.notes.lock().unwrap();
-    let i = uid.into_inner() as usize;
-    match notes.get(i) {
+    let uuid = uid.into_inner() as usize;
+    match notes.get(uuid) {
         Some(_) => {
-            notes.remove(i);
+            notes.remove(uuid);
             Ok(HttpResponse::Ok().body("Deleting!"))
         },
         None => {
@@ -59,6 +72,7 @@ fn note_config(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/note")
             .route("/{uid}", web::get().to(get_note))
+            .route("/{uid}", web::put().to(update_note))
             .route("/{uid}", web::delete().to(delete_note))
             .route("", web::get().to(get_notes))
             .route("", web::post().to(create_note))
@@ -73,7 +87,6 @@ async fn main() -> std::io::Result<()> {
 
     let data = web::Data::new(AppStateWithMutex {
         counter: Mutex::new(0),
-        app_name: String::from("Actix_Example"),
         notes: Mutex::new(stuff)
     });
 
