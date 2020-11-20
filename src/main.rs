@@ -1,16 +1,21 @@
+#[macro_use]
+extern crate diesel;
+#[macro_use]
+extern crate diesel_migrations;
+
 use actix_web::{web, App, HttpServer, HttpResponse, error, web::{Path, Json}};
-use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
+
+mod data;
+use data::models::NewNote;
+use data::models::Note;
+use data::establish_connection;
+
+use diesel::prelude::SqliteConnection;
 
 struct AppStateWithMutex {
     counter: Mutex<i32>,
-    notes: Mutex<Vec<Note>>
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-struct Note {
-    title: String,
-    text: String,
+    conn: Mutex<SqliteConnection>
 }
 
 async fn index(data: web::Data<AppStateWithMutex>) -> String {
@@ -20,52 +25,48 @@ async fn index(data: web::Data<AppStateWithMutex>) -> String {
     format!("Request number; {}", counter)
 }
 
-async fn get_note(uid: Path<u32>, data: web::Data<AppStateWithMutex>) -> Result<Json<Note>, error::Error> {
-    let notes = data.notes.lock().unwrap();
-    let some_note = notes.get(uid.into_inner() as usize);
+async fn get_note(uid: Path<String>, data: web::Data<AppStateWithMutex>) -> Result<Json<Note>, error::Error> {
+    let conn = data.conn.lock().unwrap();
+    let some_note = Note::get(uid.as_ref(), &conn);
     match some_note {
         Some(x) => Ok(Json(x.clone())),
-        None => Err(error::ErrorNotFound("This uid is not found")) 
+        None => Err(error::ErrorNotFound("This uid is not found"))
     }
 }
 
 async fn get_notes(data: web::Data<AppStateWithMutex>) -> Result<Json<Vec<Note>>, error::Error> {
-    let notes = data.notes.lock().unwrap();
+    let conn = data.conn.lock().unwrap();
+    let notes = Note::list(&conn);
     Ok(Json(notes.clone()))
 }
 
-async fn create_note(data: web::Data<AppStateWithMutex>, create_note_request: Json<Note>) -> Result<Json<Note>, error::Error> {
-    let mut notes = data.notes.lock().unwrap();
-    notes.push(create_note_request.clone());
-    Ok(create_note_request)
-}
-
-async fn update_note(uid: Path<u32>, data: web::Data<AppStateWithMutex>, update_note_request: Json<Note>) -> Result<Json<Note>, error::Error> {
-    let mut notes = data.notes.lock().unwrap();
-    let uuid = uid.into_inner() as usize;
-    match notes.get(uuid) {
-        Some(_) => {
-            notes[uuid] = update_note_request.clone();
-            Ok(Json(update_note_request.clone()))
-        },
-        None => {
-            Err(error::ErrorNotFound("Note note found"))
-        }
+async fn create_note(data: web::Data<AppStateWithMutex>, create_note_request: Json<NewNote>) -> Result<Json<Note>, error::Error> {
+    let conn = data.conn.lock().unwrap();
+    let title = &create_note_request.title;
+    let text = &create_note_request.text;
+    let created_note = Note::create(Some(&title), Some(&text), &conn);
+    match created_note {
+        Some(x) => Ok(Json(x.clone())),
+        None => Err(error::ErrorInternalServerError("Unable to create note"))
     }
 }
 
-async fn delete_note(uid: Path<u32>, data: web::Data<AppStateWithMutex>) -> Result<HttpResponse, error::Error> {
-    let mut notes = data.notes.lock().unwrap();
-    let uuid = uid.into_inner() as usize;
-    match notes.get(uuid) {
-        Some(_) => {
-            notes.remove(uuid);
-            Ok(HttpResponse::Ok().body("Deleting!"))
-        },
-        None => {
-            Err(error::ErrorNotFound("Not found!"))
-        }
+async fn update_note(uid: Path<String>, data: web::Data<AppStateWithMutex>, update_note_request: Json<NewNote>) -> Result<Json<Note>, error::Error> {
+    let conn = data.conn.lock().unwrap();
+    let title = &update_note_request.title;
+    let text = &update_note_request.text;
+
+    let updated_note = Note::update(uid.as_ref(),Some(&title), Some(&text), &conn);
+    match updated_note {
+        Some(x) => Ok(Json(x.clone())),
+        None => Err(error::ErrorNotFound("Note not found"))
     }
+}
+
+async fn delete_note(uid: Path<String>, data: web::Data<AppStateWithMutex>) -> Result<HttpResponse, error::Error> {
+    let conn = data.conn.lock().unwrap();
+    Note::delete(uid.as_ref(), &conn);
+    Ok(HttpResponse::Ok().body("Deleting!"))
 }
 
 fn note_config(cfg: &mut web::ServiceConfig) {
@@ -81,13 +82,10 @@ fn note_config(cfg: &mut web::ServiceConfig) {
 
 #[actix_rt::main]
 async fn main() -> std::io::Result<()> {
-    let mut stuff = Vec::new();
-    stuff.push(Note{title: String::from("Test1"), text: String::from("This is a test note")});
-    stuff.push(Note{title: String::from("Test2"), text: String::from("This is another test note")});
-
+    let conn = establish_connection();
     let data = web::Data::new(AppStateWithMutex {
         counter: Mutex::new(0),
-        notes: Mutex::new(stuff)
+        conn: Mutex::new(conn)
     });
 
     HttpServer::new(move || {
